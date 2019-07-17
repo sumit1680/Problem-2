@@ -1,0 +1,104 @@
+//Using sqoop copy data available in mysql products table to folder /user/sumitsinha1680/products on hdfs as text file. 
+columns should be delimited by pipe '|'
+
+sqoop import \
+--connect "jdbc:mysql://ms.itversity.com/retail_db" \
+--username retail_user \
+--password itversity \
+--table products \
+--fields-terminated-by '|' \
+--target-dir /user/sumitsinha1680/products
+
+//move all the files from /user/sumitsinha1680/products folder to /user/sumitsinha1680/problem2/products folder
+hadoop fs -mkdir /user/umitsinha1680/problem2/
+hadoop fs -mkdir /user/sumitsinha1680/problem2/products
+hadoop fs -mv /user/sumitsinha1680/products/* /user/sumitsinha1680/problem2/products/
+
+//Change permissions of all the files under /user/sumitsinha1680/problem2/products such that 
+owner has read,write and execute permissions, 
+group has read and write permissions 
+whereas others have just read and execute permissions
+
+Owner   Group   Others
+
+4 - Read
+2 - Write
+1 - Execute
+
+4+2+1 = 7 (Read, Write and Execute)
+
+hadoop fs -chmod 765 /user/sumitsinha1680/problem2/products/*
+
+//read data in /user/sumitsinha1680/problem2/products and do the following operations using
+a) dataframes api b) spark sql c) RDDs aggregateByKey method. 
+Your solution should have three sets of steps. 
+Sort the resultant dataset by category id
+filter such that your RDD\DF has products whose price is lesser than 100 USD
+on the filtered data set find out the higest value in the product_price column under each category
+on the filtered data set also find out total products under each category
+on the filtered data set also find out the average price of the product under each category
+on the filtered data set also find out the minimum price of the product under each category
+
+4 a)
+//note: if you have downloaded from avro or parquet file,sqoop would do this and you need not to convert to data type.However, you have downloaded
+from csv file or text file
+var products = sc.textFile("/user/sumitsinha1680/problem2/products").map(x=>
+{var d = d.split('|');
+d(0).toInt,d(1).toInt,d(2),d(3),d(4).toFloat,d(5))});
+
+//create dataframe
+
+case class Product(productID:Integer, productCatID: Integer, productName: String, productDesc:String, 
+productPrice:Float, productImage:String);
+
+var productsDF = products.map(x=> Product(x._1,x._2,x._3,x._4,x._5,x._6)).toDF();
+
+productsDF.show();
+
+import org.apache.spark.sql.functions._
+
+var dataFrameResult = productsDF.filter("productPrice < 100").
+groupBy(col("productCategory")).
+agg(max(col("productPrice")).alias("max_price"),
+countDistinct(col("productID")).alias("tot_products"),
+round(avg(col("productPrice")),2).alias("avg_price"),
+min(col("productPrice")).alias("min_price")).
+orderBy(col("productCategory"));
+
+
+ dataFrameResult.show();
+
+b) SparkSQL
+
+productsDF.registerTempTable("products");
+
+var sqlResult = sqlContext.sql("select product_category_id, max(product_price) as maximum_price, 
+count(distinct(product_id)) as total_products, cast(avg(product_price) as decimal(10,2)) as average_price, 
+min(product_price) as minimum_price from products 
+where product_price <100 group by product_category_id 
+order by product_category_id desc");
+
+sqlResult.show();
+
+C) 
+
+var rddResult = productsDF.map(x=>(x(1).toString.toInt,x(4).toString.toDouble)).
+aggregateByKey((0.0,0.0,0,9999999999999.0))
+((x,y)=>(math.max(x._1,y),x._2+y,x._3+1,math.min(x._4,y)),(x,y)=>(math.max(x._1,y._1),x._2+y._2,x._3+y._3,
+math.min(x._4,y._4))).map(x=> (x._1,x._2._1,(x._2._2/x._2._3),x._2._3,x._2._4)).sortBy(_._1, false);
+
+rddResult.collect().foreach(println);
+
+//store the result in avro file using snappy compression under these folders respectively
+/user/sumitsinha1680/problem2/products/result-df
+/user/sumitsinha1680/problem2/products/result-sql
+/user/sumitsinha1680/problem2/products/result-rdd
+
+import com.databricks.spark.avro._;
+sqlContext.setConf("spark.sql.avro.compression.codec","snappy")
+dataFrameResult.write.avro("/user/sumitsinha1680/problem2/products/result-df");
+sqlResult.write.avro("/user/sumitsinha1680/problem2/products/result-sql"); 
+rddResult.toDF().write.avro("/user/sumitsinha1680/problem2/products/result-rdd");;
+
+
+
